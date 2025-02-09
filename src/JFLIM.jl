@@ -6,6 +6,8 @@ using Plots
 using MicroscopyTools # for soft_delta
 # using DeconvOptim # for conv_aux
 using ChainRulesCore
+# using LinearAlgebra # for norm
+
 include("../../Forks/DeconvOptim.jl/src/conv.jl")
 include("../../Forks/DeconvOptim.jl/src/forward_models.jl")
 
