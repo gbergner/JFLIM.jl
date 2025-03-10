@@ -134,17 +134,15 @@ end
 # forward = (vec) -> DeconvOptim.conv_aux(conv, multi_exp(time_data, merge(NamedTuple(vec),fixed_val)), otf)
 # otf, conv = plan_conv_r(irf_n, measured, 1);
 
-function get_start_vals(tau_start, off_start, amp_start, t0_start=nothing; fixed_tau)
-    if (fixed_tau)
-        tau_start = Fixed(Float32.(tau_start))
-    else
-        tau_start = Positive(Float32.(tau_start))
-    end
+function get_start_vals(tau_start, off_start, amp_start, t0_start=nothing; fixed_tau, fixed_offset=true, amp_positive=true)
+    tau_start = (fixed_tau) ? Fixed(Float32.(tau_start)) : Positive(Float32.(tau_start))
+    off_start = (fixed_offset) ? Fixed(Float32.(off_start)) : Positive(Float32.(off_start))
 
+    amps_start = (amp_positive) ? Positive(Float32.(amp_start)) : Float32.(amp_start)
     if isnothing(t0_start)
-        all_start = (offset=Fixed(Float32.(off_start)), amps=Positive(Float32.(amp_start)), τs=tau_start)
+        all_start = (offset=off_start, amps=amps_start, τs=tau_start)
     else
-        all_start = (offset=Fixed(Float32.(off_start)), amps=Positive(Float32.(amp_start)), τs=tau_start, t0=Float32.(t0_start))
+        all_start = (offset=off_start, amps=amps_start, τs=tau_start, t0=Float32.(t0_start))
     end
     return all_start
 end
@@ -255,16 +253,28 @@ All results are in time bins as units.
 - `verbose::Bool=true`: Print the fitting progress.
 - `stat::Function=loss_poisson`: The loss function to use for the fitting.
 - `iterations::Int=10`: The number of iterations to perform.
+- `irf::Union{Nothing, Array{Float32, 4}}=nothing`: The instrument response function (IRF) to use for the fitting.
+- `num_exponents::Int=1`: The number of exponential components to fit.
+- `fixed_tau::Bool=true`: Fix the lifetime values.
+- `fixed_offset::Bool=true`: Fix the offset values.
+- `amp_positive::Bool=true`: Fix the amplitudes to be positive.
+- `tau_start::Union{Nothing, Array{Float32, 5}}=nothing`: The starting lifetime values. Need to be oriented along dimension 5 for multiple exponentials
+- `global_tau::Bool=true`: Use a global lifetime value.
+- `off_start::Union{Nothing, Float32}=nothing`: The starting offset value.
+- `amp_start::Union{Nothing, Array{Float32, 4}}=nothing`: The starting amplitude values.
+- `t0_start::Union{Nothing, Float32}=nothing`: The starting time value.
+- `all_start::Union{Nothing, NamedTuple}=nothing`: The starting values for all parameters. If this is given, other starting values (tau_start, off_start, amp_start, t0_start) are ignored.
+- `bgnoise::Float32=2f0`: The background noise level.
 
 """
-function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, stat=loss_poisson, iterations=10, irf=nothing, num_exponents=1, fixed_tau=true, 
+function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, stat=loss_poisson, iterations=10, irf=nothing, num_exponents=1, fixed_tau=true, fixed_offset=true, amp_positive=true,
                     tau_start=nothing, global_tau=true, off_start=nothing, amp_start=nothing, t0_start=nothing, all_start=nothing, bgnoise=2f0)
     any(isnan, to_fit) && error("NaN in data");
     if !isnothing(all_start)
         tau_start=all_start.τs
         off_start=all_start.offset[1]
-        amp_start=all_start.amps
-        t0_start=all_start.t0
+        amp_start=all_start.amps        
+        t0_start= haskey(all_start, :t0) ? all_start.t0 : t0_start
     end
 
     sigma = 0f0
@@ -336,7 +346,7 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
         scale_factor = Float32.(scale_factor)
         println("scale factor is: $(scale_factor)")
         if (verbose)
-            all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau)
+            all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau, fixed_offset=fixed_offset, amp_positive=amp_positive)
             println("Initial starting loss (before scale): ", get_fwd_val(to_fit, all_start, irf, mytimes; stat = stat, bgnoise=bgnoise))
         end
         to_fit = to_fit ./ scale_factor
@@ -349,15 +359,15 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
         off_start = CuArray([off_start])
         tau_start = CuArray(tau_start)
         amp_start = CuArray(amp_start)
-        t0_start = CuArray([t0_start;;;;;])
+        t0_start = isnothing(t0_start) ? nothing : CuArray([t0_start;;;;;])
         mytimes = CuArray(mytimes)
         if !isnothing(irf)
             irf = CuArray(irf)
         end
     end
-    all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau)
+    all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau, fixed_offset=fixed_offset, amp_positive=amp_positive)
 
-    bare, res, fit = do_fit(to_fit, all_start; mytimes=mytimes, iterations=iterations, stat=stat, verbose=verbose, irf=irf, fixed_tau=fixed_tau, bgnoise=2f0);
+    bare, res, fit = do_fit(to_fit, all_start; mytimes=mytimes, iterations=iterations, stat=stat, verbose=verbose, irf=irf, fixed_tau=fixed_tau, bgnoise=bgnoise);
 
     if use_cuda
         fit = Array(fit)
@@ -372,11 +382,11 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
 
     if !isnothing(scale_factor)
         res_amps = res.amps .* scale_factor
-        res_offset = res.offset .* scale_factor
-        res = (amps=res_amps, offset=res_offset, t0=res.t0, τs=res.τs)
+        res_offset = res.offset .* scale_factor        
+        res = haskey(res, :t0) ? (amps=res_amps, offset=res_offset, t0=res.t0, τs=res.τs) : (amps=res_amps, offset=res_offset, τs=res.τs)
         fit .*= scale_factor
         to_fit = Array(to_fit .* scale_factor)
-        irf = Array(irf)
+        irf = isnothing(irf) ? nothing : Array(irf)
         mytimes = Array(mytimes)
         if (verbose)
             println("Final loss (undoing scale): ", get_fwd_val(to_fit, res, irf, mytimes; stat = stat, bgnoise=bgnoise))
