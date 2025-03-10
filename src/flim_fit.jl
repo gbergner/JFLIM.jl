@@ -150,11 +150,10 @@ function get_start_vals(tau_start, off_start, amp_start, t0_start=nothing; fixed
 end
 
 function get_fwd(to_fit, irf, mytimes) # , tmp_decays, result)
-    irf = eltype(to_fit).(irf)
-
     if isnothing(irf)
         return (vec) -> multi_exp(vec, mytimes) #, tmp_decays, result);
     else
+        irf = eltype(to_fit).(irf)
         # all_start = (offset=Positive(Float32.(off_start)), amps=Positive(Float32.(amp_start)), τs=tau_start, t0=Float32.(t0_start))
         # @noinline function doconv(vec) # somehow inlining this function is causins an internal Zygote error
         #     @noinline tmp = multi_exp_irf(vec, mytimes)
