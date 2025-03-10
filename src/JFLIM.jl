@@ -8,8 +8,9 @@ using MicroscopyTools # for soft_delta
 using ChainRulesCore
 # using LinearAlgebra # for norm
 
-include("../../Forks/DeconvOptim.jl/src/conv.jl")
-include("../../Forks/DeconvOptim.jl/src/forward_models.jl")
+# from the DeconvOptim toolbox:
+include("conv.jl")
+include("forward_models.jl")
 
 export loss_gaussian, loss_anscombe_pos, loss_anscombe, loss_poisson
 
