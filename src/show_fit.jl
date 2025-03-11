@@ -21,7 +21,18 @@ function show_fit(to_fit, fit, Δt=12.5/1024; positions=(size(to_fit)[1:2].÷4, 
 
 end
 
+"""
 
+    show_fit_log(to_fit, fit, Δt=12.5/1024; positions=(size(to_fit)[1:2].÷4, size(to_fit)[1:2].÷2 .+1, 3 .*size(to_fit)[1:2].÷4))
+
+Show the fit of the data in a log plot
+
+# Arguments
+- `to_fit`: the data to be fitted
+- `fit`: the fit of the data
+- `Δt`: the time step
+- `positions`: the positions to be shown
+"""
 function show_fit_log(to_fit, fit, Δt=12.5/1024; positions=(size(to_fit)[1:2].÷4, size(to_fit)[1:2].÷2 .+1, 3 .*size(to_fit)[1:2].÷4))
     meandat = mean(to_fit, dims=(1, 2, 5))
     meanfit = mean(fit, dims=(1, 2, 5))

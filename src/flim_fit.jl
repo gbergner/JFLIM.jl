@@ -241,7 +241,9 @@ has_nan(x) = any(isnan, x)
 is_pos(x) = all(x .>= 0)
 
 """
-    FLIM_fit(to_fit; use_cuda=false, verbose=true)
+    FLIM_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, stat=loss_poisson,
+                    iterations=10, irf=nothing, num_exponents=1, fixed_tau=true, fixed_offset=true, amp_positive=true,
+                    tau_start=nothing, global_tau=true, off_start=nothing, amp_start=nothing, t0_start=nothing, all_start=nothing, bgnoise=2f0)
 
 Fit the FLIM data `measured` with a (multi-)exponential decay model.
 The function returns the fit parameters and the fit itself.
@@ -434,6 +436,16 @@ function flim_fit(to_fit, ::ScaleNorm; varargs...)
     return flim_fit(to_fit; scale_factor=scale_factor, varargs...)
 end
 
+"""
+    flim_fit(to_fit, ::ScaleQ10; varargs...)
+
+    Scale the data by the 10* 99% quantile and fit it.
+
+# Arguments
+- `to_fit::Array{Float32, 4}`: The data to fit.
+- `varargs...`: Additional arguments to `flim_fit`.
+
+"""
 function flim_fit(to_fit, ::ScaleQ10; varargs...)
     println("Scaling Data by the 10* 99% Quantile")
     scale_factor = quantile(to_fit[:], 0.99) * 10 # norm(to_fit)
