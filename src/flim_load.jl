@@ -13,10 +13,9 @@ function load_sdt(fn)
     return data
 end
 
-function load_old_sdt(fn, sz)
+function load_old_sdt(fn, sz, stri=1024)
     fd = open(fn)
     dat = read(fd)
-    stri = 1024
     mylen = size(dat)[1]
     spectra = (mylen ÷ (stri*2))
     start = mylen -  spectra * stri * 2
