@@ -134,8 +134,16 @@ end
 # forward = (vec) -> DeconvOptim.conv_aux(conv, multi_exp(time_data, merge(NamedTuple(vec),fixed_val)), otf)
 # otf, conv = plan_conv_r(irf_n, measured, 1);
 
-function get_start_vals(tau_start, off_start, amp_start, t0_start=nothing; fixed_tau, fixed_offset=true, amp_positive=true)
-    tau_start = (fixed_tau) ? Fixed(Float32.(tau_start)) : Positive(Float32.(tau_start))
+function get_start_vals(tau_start, off_start, amp_start, t0_start=nothing; fixed_tau, fixed_offset=true, amp_positive=true,tau_bounded=false)
+    #tau_start = (fixed_tau) ? Fixed(Float32.(tau_start)) : Positive(Float32.(tau_start))
+    if tau_bounded
+        tmp=Float32.(tau_start)
+        lower=Float32(1.0e-6)
+        upper=Float32(1.0e8)
+        tau_start=BoundedSoftMax(tmp,lower,upper)
+    else
+        tau_start = (fixed_tau) ? Fixed(Float32.(tau_start)) : Positive(Float32.(tau_start))
+    end
     off_start = (fixed_offset) ? Fixed(Float32.(off_start)) : Positive(Float32.(off_start))
 
     amps_start = (amp_positive) ? Positive(Float32.(amp_start)) : Float32.(amp_start)
@@ -227,7 +235,7 @@ function do_fit(to_fit, all_start; mytimes=0:size(to_fit,4)-1, iterations=20, st
     if (verbose)
         # @show optim_res
     end
-    # @show optim_res = Optim.optimize(loss(measured, forward), start_vals, LBFGS())
+ #    @show optim_res = Optim.optimize(loss(measured, forward), start_vals, LBFGS())
     bare, res = get_fit_results(optim_res1)
     fit = forward(bare);
 
@@ -270,7 +278,7 @@ All results are in time bins as units.
 
 """
 function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, stat=loss_poisson, iterations=10, irf=nothing, num_exponents=1, fixed_tau=true, fixed_offset=true, amp_positive=true,
-                    tau_start=nothing, global_tau=true, off_start=nothing, amp_start=nothing, t0_start=nothing, all_start=nothing, bgnoise=2f0)
+                    tau_start=nothing, global_tau=true, off_start=nothing, amp_start=nothing, t0_start=nothing, all_start=nothing, bgnoise=2f0,tau_bounded=true)
     any(isnan, to_fit) && error("NaN in data");
     if !isnothing(all_start)
         tau_start=all_start.τs
@@ -367,7 +375,7 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
             irf = CuArray(irf)
         end
     end
-    all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau, fixed_offset=fixed_offset, amp_positive=amp_positive)
+    all_start = get_start_vals(tau_start, off_start, amp_start, t0_start; fixed_tau=fixed_tau, fixed_offset=fixed_offset, amp_positive=amp_positive,tau_bounded=tau_bounded)
 
     bare, res, fit = do_fit(to_fit, all_start; mytimes=mytimes, iterations=iterations, stat=stat, verbose=verbose, irf=irf, fixed_tau=fixed_tau, bgnoise=bgnoise);
 
