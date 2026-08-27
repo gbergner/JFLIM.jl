@@ -18,56 +18,105 @@ end
 
 
 """
-    get_tau(data)
+    get_tau(data; sigma=0, irfsigma=4.0, verbose=false, return_mask=false)
 
 Get the pixelwise lifetime of the FLIM data `data` in a fast way by ratioing the intensities of the decay curve in two windows.
 The "rapid lifetime determination (RLD)" method is used.
 See https://www.researchgate.net/publication/265171406_Precision_of_mono-exponential_decay_estimates_from_rapid_lifetime_determination_in_the_presence_of_signal_photon_and_background_noise
 
-# Arguments
-- `data::Array{Float32, 4}`: The FLIM data.
-- `sigma::Float32=0`: The standard deviation of the Gaussian filter to apply to the data.
-- `irfsigma::Float32=4.0`: The standard deviation of the instrument response function (irf), delaying the start of estimation from the maximum.
+The two windows `W1 = [ti, tmid-1]` (length `L1`) and `W2 = [tmid+1, tend]` (length `L2`)
+are separated by the single skipped bin `tmid` and are derived once from the mean decay.
+With `a1`, `a2` the window sums and `G = tmid - ti + 1` the gap between the window start
+indices, the exact discrete relation for `d[n] = A·r^(n-1)`, `r = exp(-1/τ)`, is
 
+    R := F(τ)·a1/a2 = r^(-G),   F(τ) = (1 - r^L2)/(1 - r^L1)   ⇒   τ = G / log(R)
+
+`F` depends on `τ`, so the relation is implicit and is solved by a fixed number of
+fixed-point iterations (branch-free, broadcast over the whole image). This is exact for
+arbitrary window lengths and placement, so `tend` may be clamped to `nbins` at no cost in
+accuracy. See algorithm.md § "Mathematical Formulation".
+
+# Arguments
+- `data::AbstractArray{<:Real}`: The FLIM data, time along dimension 4, offset already removed.
+- `sigma::Real=0`: The standard deviation of the Gaussian filter to apply to `a1` and `a2`.
+- `irfsigma::Real=4.0`: The standard deviation of the instrument response function (irf), delaying the start of estimation from the maximum.
+- `verbose::Bool=false`: print the window indices and the mean lifetime.
+- `return_mask::Bool=false`: if `true`, return `(τ, valid)` instead of just `τ`.
+
+# Returns
+`τ` in units of **time bins**, with a singleton time dimension (shape `(X,Y,Z,1,S)`).
+Pixels for which no estimate exists are `NaN` (and `false` in `valid`). Whole-image
+failure modes (no half-maximum crossing, degenerate windows) yield an all-`NaN` result
+rather than an exception or a clamped, plausible-looking number.
 """
-function get_tau(data; sigma = 0, irfsigma=4.0, verbose=false)
+function get_tau(data; sigma = 0, irfsigma=4.0, verbose=false, return_mask=false)
+    nbins = size(data, 4)
+    T = float(eltype(data))
+    # shape of the result: the input shape with a singleton time dimension
+    out_size = ntuple(d -> (d == 4) ? 1 : size(data, d), ndims(data))
+    all_invalid() = return_mask ? (fill(T(NaN), out_size), falses(out_size)) : fill(T(NaN), out_size)
+
+    # Step 1: all window indices come from the mean decay, not from single pixels;
+    # this is what keeps the estimator usable at low per-pixel counts.
     mean_decay = mean(data, dims=(1, 2, 3, 5))
     mean_decay = max.(mean_decay, 0)
-    ti = round.(Int, get_time_max(mean_decay)[1] .+ irfsigma)
-    tend = size(data, 4)
-    # find the first index where the intensity is below half of the maximum intensity
-    t_half = findfirst(x-> x < mean_decay[:][ti]/2, mean_decay[:][ti:tend])
-    tau_est = t_half  / log(2)
-    tmid = ti + t_half   # Point time between ti and tend
-    tend = ti + t_half*4 # to yield approximately equal signals for both ranges
-    # if (verbose)
-    #     println("range is $(ti) $(tmid) $(tend)")
-    # end
+    md = mean_decay[:]
+    # Step 2
+    ti = round(Int, get_time_max(mean_decay)[1] + irfsigma)
+    if ti < 1 || ti > nbins
+        verbose && println("get_tau: window start ti=$(ti) outside 1:$(nbins) — no estimate")
+        return all_invalid()
+    end
+    # Step 3: half-maximum crossing as an offset from ti. `findfirst` returns a 1-based
+    # position *within the slice*, hence the -1.
+    k = findfirst(x -> x < md[ti] / 2, @view md[ti:nbins])
+    if isnothing(k)
+        verbose && println("get_tau: no half-maximum crossing after ti=$(ti) — no estimate")
+        return all_invalid()
+    end
+    t_half = k - 1
+    # Step 4: the clamp on tend is what removes the τ_max ≈ (nbins-ti)/(4 log 2) ceiling
+    tmid = ti + t_half
+    tend = min(ti + 4 * t_half, nbins)
+    # Step 5
+    L1 = tmid - ti
+    L2 = tend - tmid
+    G  = tmid - ti + 1
+    if L1 < 1 || L2 < 1
+        verbose && println("get_tau: degenerate windows (ti=$(ti), tmid=$(tmid), tend=$(tend), L1=$(L1), L2=$(L2)) — no estimate")
+        return all_invalid()
+    end
+    verbose && println("get_tau: ti=$(ti) tmid=$(tmid) tend=$(tend)  L1=$(L1) L2=$(L2) G=$(G)")
 
-    # Standard Rapid Lifetime Determination (SRLD) using trapezoidal integration
-    # a1 = (sum((@view data[:, :, :, ti:tmid-1, :]), dims=4) + sum((@view data[:, :, :, ti+1:tmid, :]), dims=4) )./ 2  # trapez
-    # a2 = (sum((@view data[:, :, :, tmid+1:tend-1, :]), dims=4) + sum((@view data[:, :, :, tmid+2:tend, :]), dims=4) )./ 2
-    a1 = Float32.(sum((@view data[:, :, :, ti:tmid-1, :]), dims=4))
-    a2 = Float32.(sum((@view data[:, :, :, tmid+1:tend, :]), dims=4))
-    # a1 = Float32.(sum((@view data[:, :, :, ti:2:tmid-1, :]), dims=4))
-    # a2 = Float32.(sum((@view data[:, :, :, ti+1:2:tmid, :]), dims=4))
+    # Step 6: the integration windows are unchanged from the original implementation
+    a1 = T.(sum((@view data[:, :, :, ti:tmid-1, :]), dims=4))
+    a2 = T.(sum((@view data[:, :, :, tmid+1:tend, :]), dims=4))
     if (sigma > 0)
         a1 = filter_gaussian(a1, sigma=sigma);
         a2 = filter_gaussian(a2, sigma=sigma);
     end
-    a2 .= max.(a2, 1e-3);
-    a1 .= max.(a1, a2 .+ 1e-3, 1e-3);
-    Δt = tmid-ti
-    factor = ((1-exp(-(tend-(tmid+1))/tau_est))/(1-exp(-((tmid-1)-ti)/tau_est)))
-    R = factor * a1 ./ a2  # the factor compensates for the different integration times of the two windows
-    @show minimum(R)
-    R = max.(R, 1.0001)
-    tau = Δt ./ log.(R)
-    # tau = min.(max.(tau, 0.1),100.0)
-    if (verbose)
-        println("mean lifetime is $(mean(tau))")
+
+    # Step 7 + 8: fixed number of branch-free fixed-point iterations over the whole image.
+    # No clamping of a1/a2/R — a pixel that cannot be estimated is reported, not repaired.
+    signal_ok = (a1 .> 0) .& (a2 .> 0)
+    tau = fill(T(t_half / log(2)), size(a1))   # crude seed, in bins
+    fp_ok = copy(signal_ok)
+    for _ in 1:30
+        r = exp.(.-inv.(tau))
+        R = ((1 .- r .^ L2) ./ (1 .- r .^ L1)) .* a1 ./ a2
+        tau_new = T(G) ./ log.(R)
+        fp_ok = (R .> 1) .& isfinite.(tau_new)
+        tau = ifelse.(fp_ok, tau_new, tau)
     end
-    return tau
+
+    # Step 9
+    valid = signal_ok .& fp_ok
+    tau = ifelse.(valid, tau, T(NaN))
+    if (verbose)
+        nv = count(valid)
+        println("mean lifetime is $(nv > 0 ? mean(tau[valid]) : NaN) bins ($(nv)/$(length(valid)) pixels valid)")
+    end
+    return return_mask ? (tau, valid) : tau
 end 
 
 
@@ -304,7 +353,18 @@ function flim_fit(to_fit; scale_factor=nothing, use_cuda=false, verbose=true, st
     end
     to_fit_no_offset = max.(to_fit .- off_start, 0f0)    # may contain negative values
     if isnothing(tau_start)
-        tau_start = max.(1, get_tau(to_fit_no_offset, irfsigma=sigma, verbose=verbose)) # 25f0 .* ones(Float32, img_size)
+        # get_tau reports invalid pixels as NaN; max(1, NaN) === NaN in Julia and the
+        # fit would then bail out at `any(isnan, fit)`. Substitute the median of the
+        # valid estimates (algorithm.md § "Failure handling").
+        tau_rld, tau_valid = get_tau(to_fit_no_offset, irfsigma=sigma, verbose=verbose, return_mask=true)
+        tau_fallback = if any(tau_valid)
+            eltype(tau_rld)(median(tau_rld[tau_valid]))
+        else
+            @warn "get_tau: no valid pixel, seeding all lifetimes with nbins/10 bins"
+            eltype(tau_rld)(size(to_fit, 4) / 10)
+        end
+        tau_start = max.(1, ifelse.(tau_valid, tau_rld, tau_fallback))
+        any(isnan, tau_start) && error("NaN in the lifetime initialiser tau_start")
         if (global_tau)
             tau_start = mean(tau_start,dims=(1, 2)) # 25f0 .* ones(Float32, img_size)
         end
